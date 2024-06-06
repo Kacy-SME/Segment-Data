@@ -7,6 +7,7 @@ import numpy as np
 import argparse
 import logging
 import os
+import collections
 from tqdm import tqdm
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
@@ -19,6 +20,10 @@ logging.info("Video loaded and processing started...")
 # Initialize device
 DEVICE = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
+# Initialize a deque to store masks of previous frames for temporal smoothing
+mask_history = collections.deque(maxlen=5)
+
+
 def process_frame(frame):
     img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     background = np.zeros_like(img_rgb)  # Create a black canvas
@@ -27,7 +32,24 @@ def process_frame(frame):
     sam.to(device=DEVICE)
     mask_generator = SamAutomaticMaskGenerator(sam)
     result = mask_generator.generate(img_rgb)
-    mask = result[0]['segmentation'].astype(np.uint8)
+    mask = result[0]['segmentation'].astype(np.float32)
+
+   # Apply morphological operations
+    kernel = np.ones((5, 5), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+
+    # Threshold the mask
+    _, mask = cv2.threshold(mask, 0.5, 1, cv2.THRESH_BINARY)
+
+    # Add current mask to history for temporal smoothing
+    mask_history.append(mask)
+
+    # Temporal smoothing by averaging masks from the history
+    if len(mask_history) > 1:
+        mask_avg = np.mean(np.stack(mask_history, axis=0), axis=0)
+        mask = (mask_avg > 0.5).astype(np.uint8)
+
 
     # Invert the mask: change 0s to 1s and 1s to 0s
     mask = 1 - mask  # This flips the mask
